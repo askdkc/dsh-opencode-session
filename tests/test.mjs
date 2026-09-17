@@ -68,13 +68,28 @@ function echoServer() {
   })
 }
 
+function redirectServer(location) {
+  return new Promise((resolve) => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(302, { location })
+      res.end()
+    })
+    server.listen(0, '127.0.0.1', () => {
+      resolve({ server, url: `http://127.0.0.1:${server.address().port}` })
+    })
+  })
+}
+
 const { server, url } = await echoServer()
+const { server: outsideServer, url: outsideUrl } = await echoServer()
+const { server: outsideRedirectServer, url: outsideRedirectUrl } = await redirectServer(`${outsideUrl}/redirect-target`)
+const { server: insideRedirectServer, url: insideRedirectUrl } = await redirectServer(`${url}/redirect-target`)
 
 try {
   // ---- apply with default-ish config (only opencode-go for clarity) ----
   const ctx = fakeCtx()
   let ctx2
-  plugin.apply(ctx, { providers: ['opencode-go'], mode: 'session-id' })
+  plugin.apply(ctx, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
   const llmStream = ctx.listeners.get('llm/stream')[0]
 
   // Adapter stream shape: an async generator that performs one provider
@@ -138,7 +153,21 @@ try {
     })
   }
 
-  // 5) An explicit header set by the provider profile is preserved.
+  // 5) A model listing is excluded even when fetched inside a stream call.
+  {
+    const next = () => (async function* () {
+      const response = await fetch(`${url}/models`)
+      yield { echoed: await response.json() }
+    })()
+    const wrapped = llmStream({ provider: 'opencode-go', model: 'm', sessionId: 'session-models' }, next)
+    const chunks = []
+    for await (const chunk of wrapped) chunks.push(chunk)
+    check('model listing does not receive x-opencode-session', () => {
+      assert.equal(chunks[0].echoed.headers['x-opencode-session'], undefined)
+    })
+  }
+
+  // 6) An explicit header set by the provider profile is preserved.
   {
     const session = 'session-22222222-2222-3333-4444-555555555555'
     const next = () => (async function* () {
@@ -157,10 +186,10 @@ try {
     })
   }
 
-  // 6) uuid mode: distinct sessions -> distinct uuids; same session -> same uuid.
+  // 7) uuid mode: distinct sessions -> distinct uuids; same session -> same uuid.
   {
     ctx2 = fakeCtx()
-    plugin.apply(ctx2, { providers: ['opencode-go'], mode: 'uuid' })
+    plugin.apply(ctx2, { providers: ['opencode-go'], mode: 'uuid', urlPrefixes: [url] })
     const listener2 = ctx2.listeners.get('llm/stream')[0]
     const one = []
     for await (const c of listener2({ provider: 'opencode-go', sessionId: 'session-u1' }, () => adapterStream('u1'))) one.push(c)
@@ -178,7 +207,7 @@ try {
     })
   }
 
-  // 7) no sessionId -> no header (auxiliary calls pass through).
+  // 8) no sessionId -> no header (auxiliary calls pass through).
   {
     const chunks = []
     for await (const chunk of streamCall('opencode-go', undefined)) chunks.push(chunk)
@@ -187,7 +216,7 @@ try {
     })
   }
 
-  // 8) plugin unload restores the fetch that was installed before its apply.
+  // 9) plugin unload restores the fetch that was installed before its apply.
   // Instances from earlier groups still hold the patched fetch (the plugin is
   // a singleton in real DSH, so a fresh scenario needs those cleaned up
   // first, in reverse application order: ctx2 then ctx).
@@ -203,13 +232,24 @@ try {
     check('plugin unload restores globalThis.fetch', () => {
       assert.equal(globalThis.fetch, realFetch)
     })
+
+    const first = fakeCtx()
+    const second = fakeCtx()
+    plugin.apply(first, { providers: ['opencode-go'], urlPrefixes: [url] })
+    plugin.apply(second, { providers: ['opencode-go'], urlPrefixes: [url] })
+    for (const cleanup of first.cleanups) cleanup()
+    check('non-LIFO plugin unload keeps the active fetch patch', () => {
+      assert.notEqual(globalThis.fetch, realFetch)
+    })
+    for (const cleanup of second.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
   }
 
-  // 9) concurrent conversations keep their own header value even when their
+  // 10) concurrent conversations keep their own header value even when their
   // provider streams interleave at await boundaries.
   {
     const ctx4 = fakeCtx()
-    plugin.apply(ctx4, { providers: ['opencode-go'], mode: 'session-id' })
+    plugin.apply(ctx4, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
     const listener4 = ctx4.listeners.get('llm/stream')[0]
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -238,8 +278,65 @@ try {
     for (const cleanup of ctx4.cleanups) cleanup()
     assert.equal(globalThis.fetch, realFetch)
   }
+
+  // 11) A matching provider stream does not stamp unrelated URLs.
+  {
+    const ctx5 = fakeCtx()
+    plugin.apply(ctx5, { providers: ['opencode-go'], urlPrefixes: [url] })
+    const listener5 = ctx5.listeners.get('llm/stream')[0]
+    const next = () => (async function* () {
+      const response = await fetch(`${outsideUrl}/outside`)
+      yield { echoed: await response.json() }
+    })()
+    const chunks = []
+    for await (const chunk of listener5({ provider: 'opencode-go', sessionId: 'session-unrelated-url' }, next)) chunks.push(chunk)
+    check('matching provider does not modify unrelated URLs', () => {
+      assert.equal(chunks[0].echoed.headers['x-opencode-session'], undefined)
+    })
+    for (const cleanup of ctx5.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+
+  // 12) A redirect outside the configured endpoint does not forward the header.
+  {
+    const ctx6 = fakeCtx()
+    plugin.apply(ctx6, { providers: ['opencode-go'], urlPrefixes: [outsideRedirectUrl] })
+    const listener6 = ctx6.listeners.get('llm/stream')[0]
+    const next = () => (async function* () {
+      const response = await fetch(`${outsideRedirectUrl}/redirect`, { method: 'POST', body: '{}' })
+      yield { echoed: await response.json() }
+    })()
+    const chunks = []
+    for await (const chunk of listener6({ provider: 'opencode-go', sessionId: 'session-redirect-outside' }, next)) chunks.push(chunk)
+    check('redirect outside configured endpoint drops x-opencode-session', () => {
+      assert.equal(chunks[0].echoed.headers['x-opencode-session'], undefined)
+    })
+    for (const cleanup of ctx6.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+
+  // 13) A redirect within configured endpoints keeps the conversation header.
+  {
+    const ctx7 = fakeCtx()
+    plugin.apply(ctx7, { providers: ['opencode-go'], urlPrefixes: [insideRedirectUrl, url] })
+    const listener7 = ctx7.listeners.get('llm/stream')[0]
+    const next = () => (async function* () {
+      const response = await fetch(`${insideRedirectUrl}/redirect`)
+      yield { echoed: await response.json() }
+    })()
+    const chunks = []
+    for await (const chunk of listener7({ provider: 'opencode-go', sessionId: 'session-redirect-inside' }, next)) chunks.push(chunk)
+    check('redirect within configured endpoints keeps x-opencode-session', () => {
+      assert.equal(chunks[0].echoed.headers['x-opencode-session'], 'session-redirect-inside')
+    })
+    for (const cleanup of ctx7.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
 } finally {
   server.close()
+  outsideServer.close()
+  outsideRedirectServer.close()
+  insideRedirectServer.close()
   globalThis.fetch = realFetch
 }
 
