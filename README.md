@@ -41,6 +41,14 @@ Use `mode: uuid` for an opaque process-local value. Requests outside
 `urlPrefixes`, `GET /models`, and requests that already have the header are
 left unchanged.
 
+The session value comes from the explicit `sessionId` on the model call when
+present. Auxiliary calls that omit it (for example experimental auto-review)
+fall back to the current initiating agent session id
+(`ctx.agents.currentInitiator()`), so they stay pinned to the same OpenCode
+backend as the conversation. A call that supplies neither an explicit
+`sessionId` nor an initiating agent session is left untouched. An
+`x-opencode-session` header already present on the request always wins.
+
 ## AUTH guidance
 
 DSH's Chat/Trajectory UI intentionally blanks `AUTH` failure messages to avoid

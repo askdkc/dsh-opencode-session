@@ -23,12 +23,26 @@ function check(name, fn) {
 // ---- fake cordis ctx (only what apply() touches) ----
 function fakeCtx() {
   const listeners = new Map()
+  let initiatorSessionId
   const ctx = {
     listeners,
     logger: {
       info() {},
       warn() {},
       error() {},
+    },
+    // Mirrors the DSH `agents` service: `currentInitiator()` returns the
+    // agent driving the current auxiliary call, or undefined when none is
+    // active. Tests set the session deterministically.
+    agents: {
+      currentInitiator() {
+        return initiatorSessionId === undefined
+          ? undefined
+          : { session: { id: initiatorSessionId } }
+      },
+    },
+    setInitiatorSession(sessionId) {
+      initiatorSessionId = sessionId
     },
     effect(fn) {
       const cleanup = fn()
@@ -208,12 +222,32 @@ try {
     })
   }
 
-  // 8) no sessionId -> no header (auxiliary calls pass through).
+  // 8) Session identity resolution for auxiliary calls. An explicit id always
+  // wins; otherwise the ambient initiating agent session is used; neither
+  // identity leaves the request untouched.
   {
-    const chunks = []
-    for await (const chunk of streamCall('opencode-go', undefined)) chunks.push(chunk)
-    check('opencode-go request without sessionId is untouched', () => {
-      assert.equal(chunks[0].echoed.headers['x-opencode-session'], undefined)
+    // 8a) missing sessionId + ambient initiator -> ambient agent session id.
+    ctx.setInitiatorSession('session-ambient-agent-0000')
+    const ambientChunks = []
+    for await (const chunk of streamCall('opencode-go', undefined)) ambientChunks.push(chunk)
+    check('auxiliary call without sessionId uses ambient initiating agent session', () => {
+      assert.equal(ambientChunks[0].echoed.headers['x-opencode-session'], 'session-ambient-agent-0000')
+    })
+
+    // 8b) explicit sessionId wins over the ambient initiator.
+    const explicit = 'session-explicit-1111'
+    const explicitChunks = []
+    for await (const chunk of streamCall('opencode-go', explicit)) explicitChunks.push(chunk)
+    check('explicit sessionId wins over ambient initiating agent session', () => {
+      assert.equal(explicitChunks[0].echoed.headers['x-opencode-session'], explicit)
+    })
+
+    // 8c) neither explicit nor ambient -> untouched.
+    ctx.setInitiatorSession(undefined)
+    const bareChunks = []
+    for await (const chunk of streamCall('opencode-go', undefined)) bareChunks.push(chunk)
+    check('opencode-go request with no session identity is untouched', () => {
+      assert.equal(bareChunks[0].echoed.headers['x-opencode-session'], undefined)
     })
   }
 

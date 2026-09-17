@@ -20,7 +20,7 @@ OpenCode Go が要求する `x-opencode-session` を、DSH の会話単位で安
 - カスタムゲートウェイは `urlPrefixes` で対象URL接頭辞を追加できるようにした。
 - リクエストに既存の `x-opencode-session` がある場合は、従来どおり既存値を優先する。
 - 許可URLからのredirectは、許可範囲内ならヘッダーを維持し、範囲外ならヘッダーなしで追従する。
-- `sessionId` がない呼び出し、対象外URL、対象外provider、`GET /models` は変更しない。
+- 対象外URL、対象外provider、`GET /models` は変更しない。`sessionId` がない呼び出しは、明示IDがなければ開始元エージェントのセッションID（`ctx.agents.currentInitiator()`）へフォールバックし、どちらのIDもない場合だけ変更しない。
 
 ## 変更ファイル
 

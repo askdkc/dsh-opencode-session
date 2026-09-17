@@ -14,7 +14,11 @@
 #   mode: 'session-id' | 'uuid'   header value derivation.
 #                        'session-id' (default): reuse the DSH session id that
 #                        already travels with each model call — stable across
-#                        turns and restarts, unique per conversation.
+#                        turns and restarts, unique per conversation. When a
+#                        call omits sessionId (auxiliary calls such as
+#                        experimental auto-review), the current initiating
+#                        agent session id is used instead; a call with neither
+#                        identity is left untouched.
 #                        'uuid': a process-stable random uuid per DSH session.
 #   debug: true|false    log every streamed call that receives the header
 #                        (via ctx.logger, i.e. the dsh process console).
