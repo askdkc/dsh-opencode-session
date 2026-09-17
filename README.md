@@ -11,7 +11,7 @@ The value is stable for each DSH conversation, which fixes
 Install the plugin from a DeepSeek Harness checkout:
 
 ```sh
-pnpm dsh plugin --profile web add github:nobu121/dsh-opencode-session
+pnpm dsh plugin --profile web add github:askdkc/dsh-opencode-session
 ```
 
 Replace `web` with the target profile name, then restart that profile.
@@ -33,7 +33,7 @@ For a custom gateway, add a row with the same id to the profile's
       name: dsh-opencode-session
       config:
         providers: [opencode, opencode-go]
-        urlPrefixes: [https://example.com/zen]
+        urlPrefixes: [https://opencode.ai/zen/v1]
         mode: session-id
 ```
 
