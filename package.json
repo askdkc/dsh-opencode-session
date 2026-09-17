@@ -16,7 +16,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node tests/test.mjs",
+    "test": "node tests/test.mjs && node tests/models.test.mjs",
+    "models:refresh": "node scripts/refresh-opencode-models.mjs",
     "prepublishOnly": "npm test"
   },
   "keywords": [

@@ -21,6 +21,12 @@
 #   debugFile: path      optional: append one JSON line per streamed call that
 #                        receives the header to the given file (handy when the
 #                        process console is not visible).
+#   authGuidance: true|false  report actionable AUTH failures (free-tier
+#                        notice, data-policy opt-in URL) once per failed call
+#                        with secrets redacted. Defaults to true; the original
+#                        error is rethrown unchanged.
+#   authGuidanceFile: path   optional: append the sanitized AUTH record as
+#                        JSON lines to the given file.
 - insert:
     - id: opencode-go-session-header
       name: dsh-opencode-session

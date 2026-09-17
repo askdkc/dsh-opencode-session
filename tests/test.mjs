@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import plugin from '../lib/index.js'
+import { isAuthGuidanceError, sanitizeAuthMessage } from '../lib/index.js'
 
 const failures = []
 function check(name, fn) {
@@ -330,6 +331,121 @@ try {
       assert.equal(chunks[0].echoed.headers['x-opencode-session'], 'session-redirect-inside')
     })
     for (const cleanup of ctx7.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+  // 14) AUTH guidance sanitization keeps the actionable part only.
+  {
+    check('sanitizeAuthMessage redacts secrets but keeps URL and reason', () => {
+      const out = sanitizeAuthMessage(
+        'OpenAI API error (403): {"type":"DataPolicyError","message":"opt in: https://opencode.ai/workspace/wrk_123/go"} with sk-abc123 and Bearer secret-token',
+      )
+      assert.match(out, /DataPolicyError/)
+      assert.match(out, /https:\/\/opencode\.ai\/workspace\/wrk_123\/go/)
+      assert.doesNotMatch(out, /sk-abc123/)
+      assert.doesNotMatch(out, /secret-token/)
+      assert.match(out, /sk-<redacted>/)
+    })
+    check('sanitizeAuthMessage redacts api-key echoes', () => {
+      const out = sanitizeAuthMessage('Authentication Fails, Your api key: sk-preview-secret is invalid')
+      assert.match(out, /is invalid/)
+      assert.doesNotMatch(out, /sk-preview-secret/)
+    })
+    check('isAuthGuidanceError matches AUTH-like failures only', () => {
+      assert.equal(isAuthGuidanceError({ code: 'AUTH', message: 'anything' }), true)
+      assert.equal(isAuthGuidanceError(new Error('FreeTierError: only be used from within OpenCode')), true)
+      assert.equal(isAuthGuidanceError(new Error('upstream 503')), false)
+    })
+  }
+
+  // 15) An AUTH downstream failure is rethrown unchanged with one sanitized log.
+  {
+    const warnings = []
+    const ctx8 = {
+      ...fakeCtx(),
+      logger: { info() {}, warn(...args) { warnings.push(args.join(' ')) }, error() {} },
+    }
+    plugin.apply(ctx8, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
+    const listener8 = ctx8.listeners.get('llm/stream')[0]
+    const failure = new Error(
+      'OpenAI API error (403): {"type":"DataPolicyError","message":"requires explicit opt in: https://opencode.ai/workspace/wrk_123/go"}',
+    )
+    failure.code = 'AUTH'
+    const next = () => (async function* () {
+      yield { tag: 'before-failure' }
+      throw failure
+    })()
+    const chunks = []
+    let seen
+    try {
+      for await (const chunk of listener8({ provider: 'opencode-go', sessionId: 'session-auth-guidance' }, next)) {
+        chunks.push(chunk)
+      }
+    } catch (error) {
+      seen = error
+    }
+    check('AUTH failure propagates unchanged with sanitized guidance logged', () => {
+      assert.equal(seen, failure)
+      assert.equal(chunks.length, 1)
+      assert.equal(warnings.length, 1)
+      assert.match(warnings[0], /AUTH guidance/)
+      assert.match(warnings[0], /opencode\.ai\/workspace\/wrk_123\/go/)
+    })
+    for (const cleanup of ctx8.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+
+  // 16) A non-AUTH failure never triggers guidance output.
+  {
+    const warnings = []
+    const ctx9 = {
+      ...fakeCtx(),
+      logger: { info() {}, warn(...args) { warnings.push(args.join(' ')) }, error() {} },
+    }
+    plugin.apply(ctx9, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
+    const listener9 = ctx9.listeners.get('llm/stream')[0]
+    const next = () => (async function* () {
+      throw Object.assign(new Error('upstream 503'), { code: 'SERVER' })
+    })()
+    let seen
+    try {
+      for await (const _chunk of listener9({ provider: 'opencode-go', sessionId: 'session-no-guidance' }, next)) {}
+    } catch (error) {
+      seen = error
+    }
+    check('SERVER failure propagates without AUTH guidance', () => {
+      assert.match(String(seen?.message ?? seen), /upstream 503/)
+      assert.equal(warnings.length, 0)
+    })
+    for (const cleanup of ctx9.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+
+  // 17) authGuidance:false disables the out-of-band notice.
+  {
+    const warnings = []
+    const ctx10 = {
+      ...fakeCtx(),
+      logger: { info() {}, warn(...args) { warnings.push(args.join(' ')) }, error() {} },
+    }
+    plugin.apply(ctx10, {
+      providers: ['opencode-go'],
+      mode: 'session-id',
+      urlPrefixes: [url],
+      authGuidance: false,
+    })
+    const listener10 = ctx10.listeners.get('llm/stream')[0]
+    const failure = Object.assign(new Error('FreeTierError: can only be used from within OpenCode'), { code: 'AUTH' })
+    let seen
+    try {
+      for await (const _chunk of listener10({ provider: 'opencode-go', sessionId: 'session-muted' }, () => (async function* () { throw failure })())) {}
+    } catch (error) {
+      seen = error
+    }
+    check('authGuidance:false keeps the error but stays silent', () => {
+      assert.equal(seen, failure)
+      assert.equal(warnings.length, 0)
+    })
+    for (const cleanup of ctx10.cleanups) cleanup()
     assert.equal(globalThis.fetch, realFetch)
   }
 } finally {
