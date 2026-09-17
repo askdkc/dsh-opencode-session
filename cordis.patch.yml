@@ -8,6 +8,9 @@
 #                        Defaults to the pi-ai catalog ids ['opencode', 'opencode-go'].
 #                        Add your own route key when the OpenCode endpoint is
 #                        served under a custom provider name.
+#   urlPrefixes: [string] absolute endpoint prefixes that may receive the
+#                        header. Defaults to ['https://opencode.ai/zen']; add
+#                        the base URL when a custom OpenCode gateway is used.
 #   mode: 'session-id' | 'uuid'   header value derivation.
 #                        'session-id' (default): reuse the DSH session id that
 #                        already travels with each model call — stable across
@@ -25,5 +28,7 @@
         providers:
           - opencode
           - opencode-go
+        urlPrefixes:
+          - https://opencode.ai/zen
         mode: session-id
         debug: false

@@ -1,134 +1,52 @@
 # dsh-opencode-session
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH)
-plugin that automatically sends the **`x-opencode-session`** request header on
-model calls routed to **OpenCode / OpenCode Go** providers — one stable
-session id per DSH conversation.
+Adds a stable `x-opencode-session` header to OpenCode and OpenCode Go requests
+made by [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-## Why
+The value is stable for each DSH conversation, which fixes
+`400 MissingSessionID` errors and preserves OpenCode session affinity.
 
-Since 2026-09-05 OpenCode's relay requires an `x-opencode-session` header on
-API requests (tracked upstream in
-[deepseek-harness discussion #5495](https://github.com/deepseek-ai/deepseek-harness/discussions/5495));
-without it, requests fail with `400 MissingSessionID`-style errors. Requests
-that share the same header value are pinned to the same upstream backend,
-which is also what keeps OpenCode's prompt cache warm across the turns of one
-conversation.
+## Usage
 
-This plugin:
-
-- **fixes the 400** by always attaching the header to OpenCode(Go) requests,
-- **keeps the cache/affinity benefit** by using a value that is unique **per
-  conversation** and stable across that conversation's turns (by default the
-  DSH session id itself, the same identity the official DeepSeek adapter
-  already sends as `x-deepseek-harness-session-id`),
-- leaves every other provider, and every request that already carries the
-  header, untouched.
-
-## Install
-
-From the npm registry (once published):
+Install the plugin from a DeepSeek Harness checkout:
 
 ```sh
-dsh plugin --profile web add dsh-opencode-session
+pnpm dsh plugin --profile web add github:nobu121/dsh-opencode-session
 ```
 
-From a local checkout:
+Replace `web` with the target profile name, then restart that profile.
 
-```sh
-dsh plugin --profile web add ./path/to/dsh-opencode-session
-```
-
-Then **fully restart** your dsh profile (bundle layers are read at startup).
-The startup log shows:
-
-```
-[opencode-go-session-header] active for providers [opencode, opencode-go] with mode session-id
-```
-
-If you run DSH from a source checkout instead, load it as an overlay:
-`pnpm dsh web --patch ./cordis.patch.yml`.
+Install it in every profile that uses OpenCode providers. Profiles load plugins
+independently.
 
 ## Configuration
 
-The plugin row lives in the bundle's `cordis.patch.yml`; all keys are optional:
+The default configuration covers `opencode` and `opencode-go` and targets
+`https://opencode.ai/zen`.
+
+For a custom gateway, add a row with the same id to the profile's
+`cordis.patch.yml`:
 
 ```yaml
 - insert:
     - id: opencode-go-session-header
       name: dsh-opencode-session
       config:
-        providers: [opencode, opencode-go]   # route keys to attach the header to
-        mode: session-id                     # 'session-id' | 'uuid'
-        debug: false
-        debugFile: null                      # optional absolute path
+        providers: [opencode, opencode-go]
+        urlPrefixes: [https://example.com/zen]
+        mode: session-id
 ```
 
-- `providers` — provider route keys whose requests get the header. The
-  defaults cover the pi-ai catalog ids `opencode` and `opencode-go`; add your
-  own route key when you serve OpenCode through a custom provider name.
-- `mode`
-  - `session-id` (default) — header value = the DSH session id of the model
-    call. Unique per conversation, stable across turns, compaction, retries
-    and process restarts.
-  - `uuid` — a random UUID derived once per DSH session id (opaque; kept in
-    memory, so it resets when the process restarts).
-- `debug` — log every streamed call that receives the header via
-  `ctx.logger` (the dsh process console).
-- `debugFile` — optional absolute path. When set, every streamed call that
-  receives the header appends one JSON line
-  (`{"ts","provider","model","session","header","value"}`) to that file —
-  handy when the dsh console is not visible.
-
-To override configuration in a profile without editing the package, add a
-row with the same id in the profile's own `cordis.patch.yml` (it replaces the
-whole `config`, so restate every key).
-
-## How it works
-
-1. Listens on the `llm/stream` waterfall. A call whose `options.provider`
-   names a configured OpenCode route and which carries a `sessionId` is
-   driven through an `AsyncLocalStorage` store holding the header value.
-2. `globalThis.fetch` is patched once. While such a store is active, the
-   outgoing request receives `x-opencode-session: <value>` (unless it already
-   carries the header — an existing value always wins).
-3. Both registrations are fiber-scoped ctx effects: stopping / updating /
-   unloading the plugin restores the original `fetch` and removes the
-   listener.
-
-Non-OpenCode providers, requests without a `sessionId` (some auxiliary
-hand-built calls), and model discovery requests pass through untouched.
-
-## Notes / limitations
-
-- The header is attached to chat/streaming requests inside an `llm/stream`
-  call. The one-shot model listing used by the Models page
-  (`GET <baseURL>/models`) is a separate flow and does not receive the
-  header; if your OpenCode endpoint also rejects that listing, open an issue.
-- The plugin relies on DSH outbound LLM requests going through the Node
-  global `fetch`. If a future DSH version swaps its network stack, the
-  plugin stops injecting (symptom: the 400 comes back) — uninstall then.
+Use `mode: uuid` for an opaque process-local value. Requests outside
+`urlPrefixes`, `GET /models`, and requests that already have the header are
+left unchanged.
 
 ## Development
 
 ```sh
 node --check lib/index.js
-npm test        # local behavior tests against an echo server
+npm test
 ```
-
-## Publishing (for maintainers)
-
-The package is plain ESM JavaScript with zero dependencies; `npm test` runs
-automatically via `prepublishOnly`.
-
-```sh
-npm login                       # once, with your npm account
-npm pack --dry-run              # preview exactly what lands in the tarball
-npm publish                     # files = lib/, cordis.patch.yml, README.md
-```
-
-Before publishing, double-check the name is free on the npm registry and fill
-in `author`, `homepage`, and `repository` in `package.json` if you like.
 
 ## License
 
