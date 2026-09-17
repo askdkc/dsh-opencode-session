@@ -448,6 +448,69 @@ try {
     for (const cleanup of ctx10.cleanups) cleanup()
     assert.equal(globalThis.fetch, realFetch)
   }
+  // 18) An AUTH failure arriving as an error finish chunk (pi-ai style: never
+  // throws mid-stream) is reported once and passed through untouched.
+  {
+    const warnings = []
+    const ctx11 = {
+      ...fakeCtx(),
+      logger: { info() {}, warn(...args) { warnings.push(args.join(' ')) }, error() {} },
+    }
+    plugin.apply(ctx11, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
+    const listener11 = ctx11.listeners.get('llm/stream')[0]
+    const finish = {
+      type: 'finish',
+      reason: {
+        kind: 'error',
+        failure: {
+          code: 'AUTH',
+          message: 'OpenAI API error (403): {"type":"DataPolicyError","message":"requires explicit opt in: https://opencode.ai/workspace/wrk_123/go"}',
+        },
+      },
+    }
+    const next = () => (async function* () {
+      yield { tag: 'text-seen' }
+      yield finish
+    })()
+    const chunks = []
+    for await (const chunk of listener11({ provider: 'opencode-go', sessionId: 'session-finish-auth' }, next)) {
+      chunks.push(chunk)
+    }
+    check('error finish chunk is reported once and passed through', () => {
+      assert.equal(chunks.length, 2)
+      assert.equal(chunks[1], finish)
+      assert.equal(warnings.length, 1)
+      assert.match(warnings[0], /AUTH guidance/)
+      assert.match(warnings[0], /opencode\.ai\/workspace\/wrk_123\/go/)
+    })
+    for (const cleanup of ctx11.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
+
+  // 19) A successful stop finish chunk never triggers guidance output.
+  {
+    const warnings = []
+    const ctx12 = {
+      ...fakeCtx(),
+      logger: { info() {}, warn(...args) { warnings.push(args.join(' ')) }, error() {} },
+    }
+    plugin.apply(ctx12, { providers: ['opencode-go'], mode: 'session-id', urlPrefixes: [url] })
+    const listener12 = ctx12.listeners.get('llm/stream')[0]
+    const next = () => (async function* () {
+      yield { tag: 'text-seen' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })()
+    const chunks = []
+    for await (const chunk of listener12({ provider: 'opencode-go', sessionId: 'session-finish-ok' }, next)) {
+      chunks.push(chunk)
+    }
+    check('stop finish chunk stays silent', () => {
+      assert.equal(chunks.length, 2)
+      assert.equal(warnings.length, 0)
+    })
+    for (const cleanup of ctx12.cleanups) cleanup()
+    assert.equal(globalThis.fetch, realFetch)
+  }
 } finally {
   server.close()
   outsideServer.close()
